@@ -1,10 +1,11 @@
-
 const express = require('express');
 const bodyParser = require('body-parser');
 const multer = require('multer');
 const path = require('path');
 const jwt = require('jsonwebtoken');
-const sqlite3 = require('sqlite3').verbose();
+const { Sequelize, DataTypes } = require('sequelize');
+const bcrypt = require('bcrypt');
+
 
 const app = express();
 const port = 3000;
@@ -15,60 +16,86 @@ app.use(bodyParser.json());
 const upload = multer({ dest: 'uploads/' });
 
 // Secret key for JWT
-const secretKey = 'your-secret-key';
+const secretKey = 'ayomide-adegoke-adeleke';
 
 // Connect to SQLite database
-const db = new sqlite3.Database('chatapp.db');
+const sequelize = new Sequelize('sqlite::memory:');
 
-// Create user table
-db.run(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT,
-    password TEXT,
-    profilePicture TEXT DEFAULT 'default.jpg'
-  )
-`);
+// Define User model
+const User = sequelize.define('User', {
+  username: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    unique: true,
+  },
+  password: {
+    type: DataTypes.STRING,
+    allowNull: false,
+  },
+  profilePicture: {
+    type: DataTypes.STRING,
+    defaultValue: 'default.jpg',
+  },
+});
 
-// Create group table
-db.run(`
-  CREATE TABLE IF NOT EXISTS groups (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT,
-    owner_id INTEGER,
-    FOREIGN KEY (owner_id) REFERENCES users (id)
-  )
-`);
+// Define Group model
+const Group = sequelize.define('Group', {
+  name: {
+    type: DataTypes.STRING,
+    allowNull: false,
+  },
+});
 
-// Create message table
-db.run(`
-  CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sender_id INTEGER,
-    group_id INTEGER,
-    message TEXT,
-    file TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (sender_id) REFERENCES users (id),
-    FOREIGN KEY (group_id) REFERENCES groups (id)
-  )
-`);
+// Define Message model
+const Message = sequelize.define('Message', {
+  message: {
+    type: DataTypes.TEXT,
+    allowNull: false,
+  },
+  file: {
+    type: DataTypes.STRING,
+  },
+});
+
+// Define associations
+User.hasMany(Message, { foreignKey: 'senderId' });
+Message.belongsTo(User, { foreignKey: 'senderId' });
+Group.hasMany(Message, { foreignKey: 'groupId' });
+Message.belongsTo(Group, { foreignKey: 'groupId' });
+User.hasMany(Group, { foreignKey: 'ownerId' });
+Group.belongsTo(User, { foreignKey: 'ownerId' });
+
 
 // Middleware for user authentication
-function authenticateUser(req, res, next) {
+async function authenticateUser(req, res, next) {
   const token = req.headers.authorization;
+
   if (!token) {
     return res.status(401).json({ message: 'Unauthorized' });
   }
 
   try {
+    
     const decoded = jwt.verify(token, secretKey);
-    req.user = decoded;
+    console.log(`decoded ${JSON.stringify(decoded)}`)
+    const user = await User.findOne({ where: { username: decoded.username } });
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid tokens' });
+    }
+    req.user = user;
     next();
-  } catch (error) {
+  } catch (err) {
+    console.log(err)
     return res.status(401).json({ message: 'Invalid token' });
   }
 }
+
+// Sync models with the database
+sequelize.sync().then(() => {
+  console.log('Database synchronized');
+}).catch((err) => {
+  console.error('Failed to synchronize database:', err);
+});
 
 // Get all users endpoint
 app.get('/', (req, res) => {
@@ -76,287 +103,224 @@ app.get('/', (req, res) => {
 });
 
 // User registration endpoint
-app.post('/register', upload.single('profilePicture'), (req, res) => {
+// User registration endpoint
+app.post('/register', upload.single('profilePicture'), async (req, res) => {
   const { username, password } = req.body;
   const profilePicture = req.file ? req.file.filename : 'default.jpg'; // Use default image if no profile picture is uploaded
 
-  const query = `
-    INSERT INTO users (username, password, profilePicture)
-    VALUES (?, ?, ?)
-  `;
-  const values = [username, password, profilePicture];
-
-  db.run(query, values, (err) => {
-    if (err) {
-      res.status(500).json({ message: 'Error occurred while registering user' });
-    } else {
-      res.json({ message: 'User registered successfully' });
-    }
-  });
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10); // Hash the password with bcrypt
+    const user = await User.create({ username, password: hashedPassword, profilePicture });
+    res.json({ message: 'User registered successfully' });
+  } catch (err) {
+    console.error('Error occurred while registering user:', err);
+    res.status(500).json({ message: 'Error occurred while registering user' });
+  }
 });
 
 // Get all users endpoint
-app.get('/users', (req, res) => {
-  const query = `
-    SELECT * FROM users
-  `;
-
-  db.all(query, (err, rows) => {
-    if (err) {
-      res.status(500).json({ message: 'Error occurred while retrieving users' });
-    } else {
-      res.json(rows);
-    }
-  });
+app.get('/users', async (req, res) => {
+  try {
+    const users = await User.findAll();
+    res.json(users);
+  } catch (err) {
+    console.error('Error occurred while retrieving users:', err);
+    res.status(500).json({ message: 'Error occurred while retrieving users' });
+  }
 });
 
 // Update user information endpoint
-app.put('/user', authenticateUser, upload.single('profilePicture'), (req, res) => {
+app.put('/user', authenticateUser, upload.single('profilePicture'), async (req, res) => {
   const { username } = req.user;
   const profilePicture = req.file ? req.file.filename : req.user.profilePicture; // Use existing profile picture if no new picture is uploaded
 
-  const query = `
-    UPDATE users
-    SET profilePicture = ?
-    WHERE username = ?
-  `;
-  const values = [profilePicture, username];
-
-  db.run(query, values, (err) => {
-    if (err) {
-      res.status(500).json({ message: 'Error occurred while updating user information' });
-    } else {
-      res.json({ message: 'User information updated successfully' });
-    }
-  });
+  try {
+    const user = await User.update({ profilePicture }, { where: { username } });
+    res.json({ message: 'User information updated successfully' });
+  } catch (err) {
+    console.error('Error occurred while updating user information:', err);
+    res.status(500).json({ message: 'Error occurred while updating user information' });
+  }
 });
 
 // User login endpoint
-app.post('/login', (req, res) => {
+app.post('/login', async (req, res) => {
   const { username, password } = req.body;
 
-  const query = `
-    SELECT * FROM users
-    WHERE username = ? AND password = ?
-  `;
-  const values = [username, password];
-
-  db.get(query, values, (err, row) => {
-    if (err) {
-      res.status(500).json({ message: 'Error occurred while logging in' });
-    } else if (!row) {
+  try {
+    const user = await User.findOne({ where: { username } });
+    if (!user) {
       res.status(401).json({ message: 'Invalid username or password' });
     } else {
-      const token = jwt.sign({ username }, secretKey);
-      res.json({ token });
+      const passwordMatch = await bcrypt.compare(password, user.password);
+      if (passwordMatch) {
+        const token = jwt.sign({ username }, secretKey, { expiresIn: '1h' });
+        res.json({ token });
+      } else {
+        res.status(401).json({ message: 'Invalid username or password' });
+      }
     }
-  });
+  } catch (err) {
+    console.error('Error occurred while logging in:', err);
+    res.status(500).json({ message: 'Error occurred while logging in' });
+  }
 });
 
+
 // One-to-one chat endpoint
-app.post('/chat/one-to-one', authenticateUser, (req, res) => {
+app.post('/chat/one-to-one', authenticateUser, async (req, res) => {
   const { recipient, message } = req.body;
   const sender = req.user.username;
 
-  const query = `
-    INSERT INTO messages (sender_id, message)
-    VALUES ((SELECT id FROM users WHERE username = ?), ?)
-  `;
-  const values = [sender, message];
-
-  db.run(query, values, (err) => {
-    if (err) {
-      res.status(500).json({ message: 'Error occurred while sending message' });
+  try {
+    const senderUser = await User.findOne({ where: { username: sender } });
+    const recipientUser = await User.findOne({ where: { username: recipient } });
+    if (!senderUser || !recipientUser) {
+      res.status(404).json({ message: 'Sender or recipient not found' });
     } else {
+      const msg = await Message.create({ senderId: senderUser.id, message });
       res.json({ message: 'Message sent successfully' });
     }
-  });
+  } catch (err) {
+    console.error('Error occurred while sending message:', err);
+    res.status(500).json({ message: 'Error occurred while sending message' });
+  }
 });
 
 // One-to-many chat endpoint
-app.post('/chat/one-to-many', authenticateUser, (req, res) => {
+app.post('/chat/one-to-many', authenticateUser, async (req, res) => {
   const { recipients, message } = req.body;
   const sender = req.user.username;
 
-  const query = `
-    INSERT INTO messages (sender_id, message)
-    VALUES ((SELECT id FROM users WHERE username = ?), ?)
-  `;
-  const values = [sender, message];
-
-  db.serialize(() => {
-    db.run('BEGIN TRANSACTION');
-    recipients.forEach((recipient) => {
-      db.run(query, values, (err) => {
-        if (err) {
-          console.error(err);
-        }
+  try {
+    const senderUser = await User.findOne({ where: { username: sender } });
+    if (!senderUser) {
+      res.status(404).json({ message: 'Sender not found' });
+    } else {
+      const recipientUsers = await User.findAll({ where: { username: recipients } });
+      const messages = recipientUsers.map((recipientUser) => {
+        return { senderId: senderUser.id, message, groupId: recipientUser.id };
       });
-    });
-    db.run('COMMIT', (err) => {
-      if (err) {
-        res.status(500).json({ message: 'Error occurred while sending message' });
-      } else {
-        res.json({ message: 'Message sent successfully' });
-      }
-    });
-  });
+      await Message.bulkCreate(messages);
+      res.json({ message: 'Message sent successfully' });
+    }
+  } catch (err) {
+    console.error('Error occurred while sending message:', err);
+    res.status(500).json({ message: 'Error occurred while sending message' });
+  }
 });
 
 // Create group endpoint
-app.post('/group/create', authenticateUser, (req, res) => {
+app.post('/group/create', authenticateUser, async (req, res) => {
   const { name } = req.body;
   const { username } = req.user;
 
-  const query = `
-    INSERT INTO groups (name, owner_id)
-    VALUES (?, (SELECT id FROM users WHERE username = ?))
-  `;
-  const values = [name, username];
-
-  db.run(query, values, function (err) {
-    if (err) {
-      res.status(500).json({ message: 'Error occurred while creating group' });
-    } else {
-      const groupId = this.lastID;
-      const updateQuery = `
-        UPDATE users
-        SET groups = GROUP_CONCAT(groups, ?)
-        WHERE username = ?
-      `;
-      const updateValues = [',' + groupId, username];
-
-      db.run(updateQuery, updateValues, (err) => {
-        if (err) {
-          res.status(500).json({ message: 'Error occurred while creating group' });
-        } else {
-          res.json({ message: 'Group created successfully' });
-        }
-      });
-    }
-  });
+  try {
+    const owner = await User.findOne({ where: { username } });
+    const group = await Group.create({ name, ownerId: owner.id });
+    await owner.addGroup(group);
+    res.json({ message: 'Group created successfully' });
+  } catch (err) {
+    console.error('Error occurred while creating group:', err);
+    res.status(500).json({ message: 'Error occurred while creating group' });
+  }
 });
 
 // Join group through link endpoint
-app.post('/group/join/:groupId', authenticateUser, (req, res) => {
+app.post('/group/join/:groupId', authenticateUser, async (req, res) => {
   const { groupId } = req.params;
   const { username } = req.user;
 
-  const query = `
-    SELECT * FROM groups
-    WHERE id = ?
-  `;
-  const values = [groupId];
-
-  db.get(query, values, (err, row) => {
-    if (err) {
-      res.status(500).json({ message: 'Error occurred while joining the group' });
-    } else if (!row) {
+  try {
+    const group = await Group.findByPk(groupId);
+    if (!group) {
       res.status(404).json({ message: 'Group not found' });
-    } else if (row.users.includes(username)) {
-      res.status(409).json({ message: 'You are already a member of this group' });
     } else {
-      const updateQuery = `
-        UPDATE groups
-        SET users = GROUP_CONCAT(users, ?)
-        WHERE id = ?
-      `;
-      const updateValues = [',' + username, groupId];
-
-      db.run(updateQuery, updateValues, (err) => {
-        if (err) {
-          res.status(500).json({ message: 'Error occurred while joining the group' });
-        } else {
-          const userUpdateQuery = `
-            UPDATE users
-            SET groups = GROUP_CONCAT(groups, ?)
-            WHERE username = ?
-          `;
-          const userUpdateValues = [',' + groupId, username];
-
-          db.run(userUpdateQuery, userUpdateValues, (err) => {
-            if (err) {
-              res.status(500).json({ message: 'Error occurred while joining the group' });
-            } else {
-              res.json({ message: 'Joined the group successfully' });
-            }
-          });
-        }
-      });
+      const user = await User.findOne({ where: { username } });
+      if (user.groups.includes(group.id)) {
+        res.status(409).json({ message: 'You are already a member of this group' });
+      } else {
+        await user.addGroup(group);
+        res.json({ message: 'Joined the group successfully' });
+      }
     }
-  });
+  } catch (err) {
+    console.error('Error occurred while joining the group:', err);
+    res.status(500).json({ message: 'Error occurred while joining the group' });
+  }
 });
 
 // Add users to group endpoint
-app.post('/group/add-users', authenticateUser, (req, res) => {
+app.post('/group/add-users', authenticateUser, async (req, res) => {
   const { groupId, users } = req.body;
 
-  const query = `
-    UPDATE groups
-    SET users = GROUP_CONCAT(users, ?)
-    WHERE id = ?
-  `;
-  const values = [',' + users.join(','), groupId];
-
-  db.run(query, values, (err) => {
-    if (err) {
-      res.status(500).json({ message: 'Error occurred while adding users to group' });
+  try {
+    const group = await Group.findByPk(groupId);
+    if (!group) {
+      res.status(404).json({ message: 'Group not found' });
     } else {
+      const userList = await User.findAll({ where: { username: users } });
+      await group.addUsers(userList);
       res.json({ message: 'Users added to group successfully' });
     }
-  });
+  } catch (err) {
+    console.error('Error occurred while adding users to group:', err);
+    res.status(500).json({ message: 'Error occurred while adding users to group' });
+  }
 });
 
 // Group chat endpoint
-app.post('/chat/group', authenticateUser, (req, res) => {
+app.post('/chat/group', authenticateUser, async (req, res) => {
   const { groupId, message } = req.body;
   const sender = req.user.username;
 
-  const query = `
-    INSERT INTO messages (sender_id, group_id, message)
-    VALUES ((SELECT id FROM users WHERE username = ?), ?, ?)
-  `;
-  const values = [sender, groupId, message];
-
-  db.run(query, values, (err) => {
-    if (err) {
-      res.status(500).json({ message: 'Error occurred while sending group message' });
+  try {
+    const senderUser = await User.findOne({ where: { username: sender } });
+    const group = await Group.findByPk(groupId);
+    if (!senderUser || !group) {
+      res.status(404).json({ message: 'Sender or group not found' });
     } else {
+      const msg = await Message.create({ senderId: senderUser.id, message, groupId });
       res.json({ message: 'Group message sent successfully' });
     }
-  });
+  } catch (err) {
+    console.error('Error occurred while sending group message:', err);
+    res.status(500).json({ message: 'Error occurred while sending group message' });
+  }
 });
 
 // Get group chat messages with pagination
-app.get('/chat/group/:groupId', authenticateUser, (req, res) => {
+app.get('/chat/group/:groupId', authenticateUser, async (req, res) => {
   const { groupId } = req.params;
   const { page = 1, limit = 10 } = req.query; // Default page: 1, limit: 10
 
   const offset = (page - 1) * limit;
 
-  const query = `
-    SELECT messages.*, users.username AS sender
-    FROM messages
-    JOIN users ON messages.sender_id = users.id
-    WHERE group_id = ?
-    ORDER BY created_at DESC
-    LIMIT ? OFFSET ?
-  `;
-  const values = [groupId, limit, offset];
-
-  db.all(query, values, (err, rows) => {
-    if (err) {
-      res.status(500).json({ message: 'Error occurred while retrieving group messages' });
+  try {
+    const group = await Group.findByPk(groupId);
+    if (!group) {
+      res.status(404).json({ message: 'Group not found' });
     } else {
-      res.json(rows);
+      const messages = await Message.findAll({
+        where: { groupId },
+        include: [{ model: User, as: 'sender' }],
+        order: [['createdAt', 'DESC']],
+        limit,
+        offset,
+      });
+      res.json(messages);
     }
-  });
+  } catch (err) {
+    console.error('Error occurred while retrieving group messages:', err);
+    res.status(500).json({ message: 'Error occurred while retrieving group messages' });
+  }
 });
 
 // Start the server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
+
 
 // This code provides the following endpoints:
 
