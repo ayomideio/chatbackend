@@ -176,7 +176,7 @@ app.post('/register', upload.single('profilePicture'), async (req, res) => {
   });
   
   
-  // Create group endpoint
+  // Create group endpoints
   app.post('/group/create', authenticateUser, async (req, res) => {
     const { name } = req.body;
     const { username } = req.user;
