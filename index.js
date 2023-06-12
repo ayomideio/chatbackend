@@ -19,7 +19,13 @@ const upload = multer({ dest: 'uploads/' });
 const secretKey = 'ayomide-adegoke-adeleke';
 
 // Connect to SQLite database
-const sequelize = new Sequelize('sqlite::memory:');
+const dbFilePath = path.join(__dirname, 'database.sqlite');
+
+const sequelize = new Sequelize({
+  dialect: 'sqlite',
+  storage: dbFilePath,
+});
+
 
 // Define User model
 const User = sequelize.define('User', {
