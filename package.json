@@ -15,6 +15,7 @@
     "jsonwebtoken": "^9.0.0",
     "mongoose": "^7.2.1",
     "mongoose-paginate-v2": "^1.7.1",
-    "multer": "^1.4.5-lts.1"
+    "multer": "^1.4.5-lts.1",
+    "sqlite3": "^5.1.6"
   }
 }
